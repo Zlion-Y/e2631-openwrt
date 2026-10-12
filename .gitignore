@@ -10,3 +10,7 @@
 
 # Local scratch.
 *.tmp
+
+# Python bytecode left behind by tools/dts_lint.py.
+__pycache__/
+*.pyc

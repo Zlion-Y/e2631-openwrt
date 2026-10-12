@@ -26,6 +26,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # check-dts.sh runs cpp and then dtc. dtc comes from the package below;
+      # cpp comes from the gcc already present on the runner image. If that
+      # ever stops being true, add gcc here rather than debugging a blank
+      # "cpp: command not found".
       - name: Install device tree tools
         run: |
           sudo apt-get update
@@ -43,21 +47,34 @@ jobs:
     needs: dts
     runs-on: ubuntu-24.04
     timeout-minutes: 150
+    # The release step at the bottom needs a token it can write with. New
+    # repositories default GITHUB_TOKEN to read-only, which would turn that
+    # step into a 403 on the first tag.
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
-      # The set the OpenWrt build system documents for Debian and Ubuntu,
-      # trimmed to what a single ARM target needs. `make prereq` below fails
-      # loudly and by name if anything is still missing.
+      # Host packages, trimmed to what a single ARM target needs. `make prereq`
+      # below is the authority: it fails loudly and by name if anything is
+      # missing, so this list only has to be good enough to reach it.
+      #
+      # python3-distutils is deliberately not here. It does not exist in Ubuntu
+      # 24.04 -- distutils went away with Python 3.12, and both
+      # packages.ubuntu.com/noble/python3-distutils and the Launchpad binary
+      # index for noble/amd64 come up empty. Naming a package apt cannot find
+      # fails this step in seconds with "Unable to locate package".
+      # python3-setuptools is here instead, and it provides the distutils shim
+      # for anything that still imports it.
       - name: Install host dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential clang flex bison g++ gawk \
             gcc-multilib g++-multilib gettext git libncurses-dev libssl-dev \
-            python3-distutils python3-setuptools rsync swig unzip zlib1g-dev \
+            python3-setuptools rsync swig unzip zlib1g-dev \
             file wget curl ca-certificates device-tree-compiler \
-            libelf-dev acl2 ccache
+            libelf-dev ccache
 
       - name: Clone the sanechips branch
         run: git clone --depth 1 -b "$OPENWRT_REF" "$OPENWRT_REPO" openwrt
@@ -82,9 +99,27 @@ jobs:
       - name: Install feeds
         run: cd openwrt && ./scripts/feeds update -a && ./scripts/feeds install -a
 
-      - name: Build
-        run: cd openwrt && make -j$(nproc) download && make -j$(nproc) IGNORE_ERRORS=m
+      # Feeds add config symbols, so the .config defconfig'd above is stale by
+      # the time the build starts. Re-running defconfig keeps the choices made
+      # here and defaults the newly arrived symbols.
+      - name: Refresh the configuration
+        run: cd openwrt && make defconfig
 
+      # No IGNORE_ERRORS, deliberately. It is the usual way to squeeze an image
+      # out of a tree with a few broken packages, but at stage 1 the first
+      # failure is the deliverable. The only additions to this branch are one
+      # device tree, one device block and one kernel config fragment, so a
+      # failure is almost certainly in one of them; ignoring errors would turn
+      # that into a missing artefact an hour later, which says nothing about
+      # what went wrong.
+      - name: Build
+        run: cd openwrt && make -j$(nproc) download && make -j$(nproc)
+
+      # The file name follows from DEVICE_VENDOR + DEVICE_MODEL, lowercased with
+      # spaces turned into hyphens: ZTE + "ZXHN E2631" -> zte_zxhn-e2631. The
+      # same rule yields zte_zxhn-h3600 for the H3600 and
+      # xiaomi_redmi-router-ac2100 for the AC2100, which is where that
+      # underscore-then-hyphen shape comes from.
       - name: Verify only a RAM image was produced
         run: |
           cd openwrt/bin/targets/sanechips/generic
@@ -100,7 +135,10 @@ jobs:
         run: |
           mkdir -p out
           cp openwrt/bin/targets/sanechips/generic/*e2631*.uImage out/
-          (cd openwrt/bin/targets/sanechips/generic && sha256sum *.uImage *.manifest 2>/dev/null) > out/sha256sums.txt
+          # ls through xargs rather than feeding the globs to sha256sum: if the
+          # target stops emitting a .manifest, a bare sha256sum *.manifest dies
+          # here and takes an otherwise good 150-minute build with it.
+          (cd openwrt/bin/targets/sanechips/generic && ls -1 *.uImage *.manifest 2>/dev/null | xargs -r sha256sum) > out/sha256sums.txt
           cp openwrt/.config out/build.config
           ls -la out
 

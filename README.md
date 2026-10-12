@@ -242,6 +242,16 @@ Real caveats, so you know what you are holding:
 - Nothing here has been run against an E2631, so none of it is a measurement of
   one. The exceptions are the memory size and the slot the stock firmware boots
   from; both came off the running board, and the device tree says so at the node.
+- **The workflow has never run.** No repository has been pointed at it yet, so
+  its steps are read-verified rather than executed. The two preconditions it
+  leans on outside this repo were checked against the real things: the
+  `ghahramani/linux` branch `h3600-linux-rfc` exists and does carry
+  `arch/arm/boot/dts/zte/zx279128s.dtsi` and
+  `include/dt-bindings/clock/zte,zx279128s-crm.h`, which is what `check-dts.sh`
+  looks for; and the artefact name it asserts follows the naming rule that
+  produces `zte_zxhn-h3600` and `xiaomi_redmi-router-ac2100` elsewhere. The host
+  package list used to ask for `python3-distutils`, which does not exist in
+  Ubuntu 24.04 — that would have failed the job in seconds, and it is gone.
 
 Sources for the values that are not inherited from the upstream SoC file, in
 descending order of strength: the live `/sys/firmware/fdt` of an E2631 running
