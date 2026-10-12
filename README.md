@@ -72,7 +72,7 @@ to be written: the upstream target already covers the whole SoC as built-ins.
 | `apply.sh` | overlays all three onto an OpenWrt checkout, idempotent |
 | `seed/e2631.config` | build configuration that selects this one device |
 | `check-dts.sh` | compiles the device tree in seconds on a Linux box, no toolchain needed |
-| `tools/dts_lint.py` | the same screen without `cpp` or `dtc`: checks `/dts-v1/`, the includes, and every `&label` |
+| `tools/dts_lint.py` | the same screen without `cpp` or `dtc`: checks `/dts-v1/`, the includes, and every `&label`. Point `--root` at any directory that has `zte/zx279128s.dtsi` under it, otherwise it cannot resolve the SoC dtsi and every `&label` looks undefined |
 | `tools/probe-e2631.sh` | read-only evidence collector, run it on the box |
 | `tools/PROBE.md` | how to read its output, per `TODO-*` ID |
 | `docs/peripherals-matrix.txt` | every peripheral on the SoC, sorted into ready / needs a measurement / not needed |
@@ -215,6 +215,19 @@ Real caveats, so you know what you are holding:
   cross-checked against the H3600 board file (patch 026). That found one genuine
   bug — this file was missing `/dts-v1/;`, which a `.dtsi` never supplies — and
   it is fixed. It is still not a substitute for the CI `dts` job.
+
+  ```sh
+  # this repo does not carry the SoC dtsi, it comes from the target's own
+  # patch 025, so the root has to be a tree that already has it
+  python3 tools/dts_lint.py \
+      overlay/target/linux/sanechips/dts/zx279128s-zte-zxhn-e2631.dts \
+      --root /path/to/tree/with/zte/zx279128s.dtsi
+  ```
+
+  Run it with no `--root` and it reports all 35 labels undefined — that is the
+  linter telling you it has not seen the dtsi, not a bug in the board file. The
+  same command against the upstream H3600 board file is the control: it must
+  print PASS.
 - **The port block is unmeasured.** The board has four sockets, not five (one
   WAN plus three LAN, from the stock firmware's own bridge and its single
   promiscuous uplink), so four `gmac_portN` nodes are enabled and the fifth is

@@ -154,15 +154,17 @@ def included_labels(dts_path, text, root, visited):
     return found, missing, visited
 
 
-def has_dts_v1(dts_path, text, visited):
+def has_dts_v1(dts_path, text, visited, root=None):
     if re.search(r"^\s*/dts-v1/\s*;", strip_comments(text), re.M):
         return True
     for rel in RE_INC_QUOTE.findall(strip_comments(text)):
-        for base in (os.path.dirname(dts_path), os.path.dirname(dts_path)):
+        # same two places included_labels() looks: the root, then the dir of
+        # the file that wrote the #include
+        for base in filter(None, (root, os.path.dirname(dts_path))):
             p = os.path.normpath(os.path.join(base, rel))
             if os.path.isfile(p) and p not in visited:
                 visited.add(p)
-                if has_dts_v1(p, load(p), visited):
+                if has_dts_v1(p, load(p), visited, root):
                     return True
     return False
 
@@ -171,11 +173,20 @@ def lint(dts, root, extras):
     text = load(dts)
     errors, warns = [], []
 
-    if not has_dts_v1(dts, text, set()):
+    if not has_dts_v1(dts, text, set(), root):
         errors.append("no /dts-v1/; directive, in this file or in any quoted "
                       "include. dtc requires it and a .dtsi never supplies it.")
 
     incs, missing, _ = included_labels(dts, text, root, set())
+    if missing:
+        # Without this, an unresolvable include turns into one "unresolved
+        # label" per &reference, which reads like the board file is broken.
+        warns.append("hint: a quoted include did not resolve (%s). If that is "
+                     "the SoC dtsi, this run never saw the labels it defines, "
+                     "so every &label below will look undefined. Pass --root "
+                     "DIR where DIR/ holds the include path, e.g. --root "
+                     "<tree>/arch/arm/boot/dts."
+                     % ", ".join(rel for rel, _ in missing))
     for rel, p in missing:
         errors.append('quoted include "%s" not found (looked at %s)' % (rel, p))
 
