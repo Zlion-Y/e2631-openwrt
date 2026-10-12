@@ -225,13 +225,60 @@ E2631 外围驱动矩阵（把所有外围先驱动起来）
 
 【9】待复核 / 未决（别当成已定论）
 
-  ① **VFP 之争（重要，影响用户态 ABI）**
-     现有项目记忆写"用户态必须 armv5 软浮点（无 VFP/NEON/硬件除法）"，
-     但**同 SoC 同 target 的 h3600_config 明确写着 CONFIG_VFP=y 且 CONFIG_VFPv3=y**。
-     Cortex-A9 r1 本身标配 VFPv3-D16，这与"无 VFP"矛盾。
-     ⇒ 本轮不据此改任何东西，但列为**待复核**：真机 /proc/cpuinfo 的 Features 行
-     会直接给出答案（有 vfp 字样 = 有）。若确有 VFP，则用户态可用 armv7 hard-float，
-     整机性能与软件兼容性都会改善 —— 值得在 stage-1 一并收数。
+  ① **VFP / 用户态 ABI —— 已定案（2026-10-12），原"待复核"撤销**
+
+     **结论：无 VFP、无 NEON ⇒ 用户态必须软浮点（arm EABI5 / armel）。旧记录是对的，
+     本矩阵初稿的推理是错的。**
+
+     ✗ 初稿错误推理：拿 `h3600_config` 里的 `CONFIG_VFP=y`+`CONFIG_VFPv3=y` 去反推
+       "原厂可能启用了 VFP ⇒ 用户态也许能用 armv7 hard-float"。
+       错在**混淆了两个不同的内核**：`h3600_config` 是**我们上游 target 的内核配置**
+       （我们自己的东西），它只能证明"内核愿意保存/恢复 VFP 上下文"，
+       **既不能证明原厂内核开了 VFP，也不能决定用户态 ABI**。教训记牢：
+       **"某个 config 里有某开关"≠"目标设备上跑着的内核有那个开关"。**
+
+     ✓ 三条独立证据（同一条结论，来源互不相干）：
+
+       (a) 原厂内核配置（`/proc/config.gz`，21,465 B / 3,478 行，真机直接解压读出）：
+               # CONFIG_VFP is not set          ← 明确关掉，不是"未显示"
+               # CONFIG_ARM_THUMB is not set
+               # CONFIG_ARM_THUMBEE is not set
+               # CONFIG_THUMB2_KERNEL is not set
+               CONFIG_AEABI=y
+               CONFIG_SMP=y   CONFIG_NR_CPUS=2
+
+       (b) 原厂用户态 ELF 的 ABI 标志（`busybox hexdump -C -n 48 /bin/busybox`）：
+               偏移 0x24 e_flags = **0x05000202**
+               0x05000000 = EF_ARM_EABI_VER5 ；0x00000200 = **EF_ARM_ABI_FLOAT_SOFT** ；
+               0x00000002 = EF_ARM_HASENTRY
+               ⇒ 软浮点是**写死在二进制 ABI 标志位**里的，不是推断。
+
+       (c) 动态加载器与 libc：
+               /lib/ld-uClibc-0.9.33.2.so  →  /lib/ld-uClibc.so.0
+               /proc/version: Linux 4.1.25 #2 **SMP** (gcc 4.9.3 / Buildroot 2015.08.1)
+
+     ✓ 两次 `/proc/cpuinfo` Features 行交叉印证（同一颗 SoC、两套内核）：
+         原厂 4.1.25（2026-10-12，本机）        : `half fastmult edsp tls`
+         项目 mainline 6.18.38（2026-08-31 实测）: `half thumb fastmult edsp thumbee tls`
+       两行**都无 vfp / vfpv3 / neon / idiva / idivt**。
+       差异只在 thumb / thumbee —— 已由 (a) 证实那是 `CONFIG_ARM_THUMB(E)` 编译开关，
+       **属内核配置差异，与硬件能力无关**（原厂内核是手工裁剪过的）。
+
+     ⚠ 顺带纠正本矩阵及多份旧文档里的写法 "armv5 软浮点"：**混了两件事**。
+       · 硬约束只有一条：**软浮点**。
+       · ISA 层级本机是 **ARMv7-A**（MIDR 0x414FC091 = ARM / variant 4 / part 0xC09 / rev 1），
+         `-march=armv5te` 只是**兼容性选择**，不是必须。
+       本 target（`CPU_TYPE:=cortex-a9`，FEATURES 无 `fpu`）本来就出 ARMv7 soft-float，正合要求。
+       也**不需要**为了让包能跑而去"选 armv5 目标"。
+
+     ⚠ 提醒后手：我们自己的内核（`h3600_config` 有 `CONFIG_VFP=y`）启动后，
+       `/proc/cpuinfo` 的 Features 行**会显示 vfp / vfpv3** —— 那是**内核暴露的 HWCAP**，
+       **不代表用户态 ABI 变硬浮点**。以后别再拿这一行去判断 ABI，要读 ELF e_flags 第 0x200 位。
+
+     ○ 仍然存疑（不影响任何决定）：**硅片本身是否有 VFP 单元**。
+       Features 行与 config 都只反映内核侧；Cortex-A9 的 VFPv3-D16 是可选实现项，
+       无法从上面三条证据判定。免费的一次性判据：stage-1 我们的镜像（CONFIG_VFP=y）
+       启动后若 Features 行出现 `vfp vfpv3`，则硅片有。**列入 stage-1 收数项，不单独花成本。**
 
   ② **reserved-memory（PP 区）**
      H3600 板级把顶部 38 MiB（@0x5da00000）保留给包处理器（no-map）。
