@@ -52,10 +52,14 @@ peripherals — the one thing both persistence routes have in common, since each
 needs a running kernel, a self-consistent device tree and the same measured
 values. The device tree now enables everything that needs no board wiring
 (UART, SPI-NAND, both PCIe controllers with a starting guess at their reset
-lines, USB) and stages the two blocks that can only be filled in on the box,
-the LED/button nodes and the MAC address. `docs/peripherals-matrix.txt` lists
-every peripheral with its status and what is still missing. No driver had to
-be written: the upstream target already covers the whole SoC as built-ins.
+lines) and stages the two blocks that can only be filled in on the box,
+the LED/button nodes and the MAC address.
+
+USB is the one deliberate exception: it is off in all three places it could be
+turned on, because bringing a USB controller up is known to hang this board and
+send the hardware watchdog into a reboot loop. `docs/peripherals-matrix.txt`
+lists every peripheral with its status and what is still missing. No driver had
+to be written: the upstream target already covers the whole SoC as built-ins.
 
 
 ## Contents
@@ -63,17 +67,21 @@ be written: the upstream target already covers the whole SoC as built-ins.
 | Path | What it is |
 |---|---|
 | `overlay/target/linux/sanechips/dts/zx279128s-zte-zxhn-e2631.dts` | the board device tree, with every unverified value marked `TODO-*` |
+| `overlay/env/kernel-config` | kernel config fragment, merged last, that turns USB off for the whole tree |
 | `fragments/device-e2631.mk` | the device definition inserted into `image/Makefile` |
-| `apply.sh` | overlays both onto an OpenWrt checkout, idempotent |
+| `apply.sh` | overlays all three onto an OpenWrt checkout, idempotent |
 | `seed/e2631.config` | build configuration that selects this one device |
-| `check-dts.sh` | compiles the device tree in seconds, no toolchain needed |
+| `check-dts.sh` | compiles the device tree in seconds on a Linux box, no toolchain needed |
+| `tools/dts_lint.py` | the same screen without `cpp` or `dtc`: checks `/dts-v1/`, the includes, and every `&label` |
 | `tools/probe-e2631.sh` | read-only evidence collector, run it on the box |
 | `tools/PROBE.md` | how to read its output, per `TODO-*` ID |
 | `docs/peripherals-matrix.txt` | every peripheral on the SoC, sorted into ready / needs a measurement / not needed |
 | `.github/workflows/build-initramfs.yml` | CI: check the device tree, then build |
 
-Nothing here replaces an existing file in the target, so the H3600 build is
-unaffected. Revert is two commands (`apply.sh` prints them).
+Nothing here replaces an existing file in the target, so a checkout of the
+branch stays intact — with one caveat: `overlay/env/kernel-config` is
+tree-global, so building the H3600 from the same tree would now fail on its USB
+packages. Revert is three commands (`apply.sh` prints them).
 
 
 ## Build
@@ -125,10 +133,16 @@ bootm 0x43000000
 top of the kernel entry point, which dies silently. `bootm` copies it to
 0x40008000 itself, which is the flow that has been proven on this board.
 
-Note that this differs from the H3600, whose RAM image is addressed at
-0x48008000 — an address that is outside DRAM entirely on a part described as
-0x40000000 plus 128 MiB. That is why the device definition replaces the
-target's `KERNEL_INITRAMFS` instead of inheriting it.
+The H3600's RAM image is addressed at 0x48008000 instead, and the reason is
+narrow: a kernel booted over TFTP should not unpack on top of the U-Boot that
+started it, whose Ethernet is still running with packet buffers at 0x41000000
+and a free-buffer list at 0x41800000. Both addresses are inside this board's
+256 MiB of DRAM (0x40000000 to 0x50000000) — an earlier revision of this file
+said otherwise, on the mistaken belief that the board had 128 MiB. 0x40008000
+is kept because it is the address this board's own kernel uses; if a TFTP boot
+ever stops silently after the U-Boot hand-off, deleting the `KERNEL_INITRAMFS`
+line in `fragments/device-e2631.mk` moves the kernel to 0x48008000 and out of
+the buffer list's way.
 
 ### Milestones to look for in the log
 
@@ -192,26 +206,43 @@ exercise.
 
 Real caveats, so you know what you are holding:
 
-- **The device tree has never been compiled.** `check-dts.sh` runs the same
-  preprocessor and `dtc` invocation OpenWrt uses; it will report an error on the
-  first CI run if there is a mistake in it. Its ten labels were checked against
-  the ones the upstream SoC file defines, but nothing beyond that has been
-  verified.
-- **The five-port block is a hypothesis** copied from the H3600, not measured.
-  Both are Ethernet-WAN gateways on the same silicon with the same four internal
-  GbPHY blocks, which is the entire basis for it.
-- **128 MiB of memory is the conservative value** and is likely wrong in the
-  safe direction; U-Boot says 256 MiB.
-- Nothing has been run against an E2631, so none of this is a measurement of one.
+- **The device tree has not been through `dtc`.** There is none on the machine
+  this was written on. What runs instead is `tools/dts_lint.py`, which catches
+  the three mistakes that would stop a build before it spends a build slot: a
+  missing `/dts-v1/;`, an `#include` that does not resolve, and a `&label` that
+  is defined neither here nor in the SoC dtsi this file includes. Every label
+  and property used here was read out of the real dtsi (target patch 025) and
+  cross-checked against the H3600 board file (patch 026). That found one genuine
+  bug — this file was missing `/dts-v1/;`, which a `.dtsi` never supplies — and
+  it is fixed. It is still not a substitute for the CI `dts` job.
+- **The port block is unmeasured.** The board has four sockets, not five (one
+  WAN plus three LAN, from the stock firmware's own bridge and its single
+  promiscuous uplink), so four `gmac_portN` nodes are enabled and the fifth is
+  left enabled only so that the boot log answers whether an external PHY answers
+  at address 8. No `label` is set on any of them: which socket is which port is
+  not known, and a label would bake a guess into every interface name downstream
+  (board.d, firewall zones, and the rest).
+- **USB is off on purpose, in three places** — the device tree, `env/kernel-config`
+  and the device fragment's package list, because bringing a controller up hangs
+  this board and the watchdog then loops it. `tools/PROBE.md` reads the `usb`
+  probe section as a regression check, not as a to-do.
+- Nothing here has been run against an E2631, so none of it is a measurement of
+  one. The exceptions are the memory size and the slot the stock firmware boots
+  from; both came off the running board, and the device tree says so at the node.
 
-Sources for the values that are not inherited from the upstream SoC file: the
-vendor U-Boot description of firmware `V1.0.0.6B5.8000` as transcribed in
-[Zlion-Y/e2631-mainline-zx279128s](https://github.com/Zlion-Y/e2631-mainline-zx279128s),
-the live `/sys/firmware/fdt` dump of a ZXHN F670L in
-[cubingmucus998/zte-zx279128s-recon](https://github.com/cubingmucus998/zte-zx279128s-recon),
-and the H3600 board file at `arch/arm/boot/dts/zte/` in
-[ghahramani/linux](https://github.com/ghahramani/linux) branch
-`h3600-linux-rfc`.
+Sources for the values that are not inherited from the upstream SoC file, in
+descending order of strength: the live `/sys/firmware/fdt` of an E2631 running
+its stock firmware (pulled over tftp, archived as `refs/e2631_live.dtb` with the
+decoded tree beside it); the DTB appended to that firmware's `kernel1`; and,
+further down, the vendor U-Boot description of firmware `V1.0.0.6B5.8000` as
+transcribed in
+[Zlion-Y/e2631-mainline-zx279128s](https://github.com/Zlion-Y/e2631-mainline-zx279128s)
+together with the live fdt of a ZXHN F670L in
+[cubingmucus998/zte-zx279128s-recon](https://github.com/cubingmucus998/zte-zx279128s-recon).
+The H3600 board file is the template for how a board on this SoC is written, at
+`arch/arm/boot/dts/zte/` in
+[ghahramani/openwrt](https://github.com/ghahramani/openwrt) branch
+`pr-zte-zxhn-h3600` — not a source for this board's wiring.
 
 Device tree: `GPL-2.0-only OR BSD-2-Clause`, matching the upstream SoC file it
 includes. Build and probe scripts: `GPL-2.0-only`, in keeping with the OpenWrt

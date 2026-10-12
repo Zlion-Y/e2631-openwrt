@@ -1,28 +1,43 @@
 # Reading the output of `probe-e2631.sh`
 
-Every unknown in the device tree has an ID (`TODO-M1`, `TODO-F1`, ...). The same
+Every unknown in the device tree has an ID (`TODO-N1`, `TODO-W1`, ...). The same
 IDs appear here, so the loop is: boot the RAM image, run the script, look up the
 ID, edit the device tree, rebuild.
 
-Nothing in this file is a measurement of an E2631. Each row states what the
-evidence *would* mean once you have it, and where the number came from.
+The open ones are `N1` (PHY addresses and the port map), `W1` (the PCIe reset
+line), `L1` (LEDs and buttons), `A1` (where the MAC lives) and `F1` (SPI-NAND
+timing). `M1` is closed and `U1` is withdrawn; both sections are kept because
+what closed them, and why, is the part worth re-reading later.
+
+Nothing in this file is a measurement of an E2631 by itself. Each row states
+what the evidence *would* mean once you have it, and where the number came from.
 
 ---
 
-## TODO-M1 — how much DRAM does this board really have
+## TODO-M1 — how much DRAM this board has: **closed**
 
 **Command:** the `identity` section, lines `memory` and `dts reg`.
 
+Not open any more. The stock firmware's own device tree answers it: its
+`/proc/device-tree/memory/reg` reads `40 00 00 00 10 00 00 00`, i.e. base
+0x40000000 with size 0x10000000 (256 MiB), and its `chosen/bootargs` carries
+`mem=256M`, which is what the kernel rewrote that node from. `/proc/iomem` on
+the same box agrees — `System RAM 0x40000000-0x4fffffff`. The device tree here
+now uses 0x10000000. The earlier 128 MiB cell was a conservative guess; it
+booted because it is a subset, not because it was right.
+
+Kept for the case where a build of our own disagrees:
+
 | Observation | What it means | What to change |
 |---|---|---|
-| Kernel stops with no message shortly after `Freeing unused kernel image` | the `reg` in the device tree is larger than the DRAM | halve it and rebuild |
-| `MemTotal` ≈ 118 MB | the current 128 MiB cell is correct and the box is a 128 MiB variant | keep it |
-| `MemTotal` ≈ 245 MB with the 128 MiB cell | impossible; the kernel only uses what the cell says | raise the cell to `0x10000000` |
+| `MemTotal` ≈ 245 MB | correct, the cell matches the hardware | nothing |
+| `MemTotal` ≈ 118 MB | the cell was reverted to the old 128 MiB value | set it back to `0x10000000` |
+| the kernel stops with no message shortly after `Freeing unused kernel image` | the cell is larger than the DRAM actually present — the only failure 256 MiB should be able to cause | check this before anything else |
 
-Why this is open: U-Boot on this board prints `DRAM: 256 MiB`, the retail
-product is specified with 256 MB DDR3, but the only image ever reported to boot
-on it shipped a 128 MiB cell. The conservative value is the starting point, and
-the kernel log tells you within seconds whether it was too conservative.
+One trap worth knowing: the vendor tree also carries a second node,
+`memory@40000000`, still saying `0x20000000` (512 MiB). It is a stale leftover
+that nobody rewrote. It is not evidence of 512 MiB and not evidence of a
+contradiction.
 
 ## TODO-F1 — SPI-NAND timing
 
@@ -159,25 +174,31 @@ is why the device tree says so at the node. The retry is free: the image never
 writes flash. To find the line by hand, run the `gpio` sweep on the `gpio3`
 bank while watching the `pcie` section on a second console.
 
-## TODO-U1 — USB
+## TODO-U1 — USB: withdrawn, and the `usb` section is now a negative control
 
 **Command:** `usb` section.
 
-Two questions: did the DWC3 controller bind, and is a socket wired. A root hub
-under `/sys/bus/usb/devices` answers the first, but the driver is a module, so
-an empty list more often means `kmod-usb-dwc3` is missing from the image than
-that the controller is dead. The E2631 may have no exposed port, in which case
-the node costs nothing and can stay as it is.
+USB is off on purpose, in three places (the device tree, `env/kernel-config`, and
+the absence of any USB kmod). Reaching a controller on this board hangs it and
+sends the watchdog into a reboot loop, so there is nothing here to measure and
+nothing to enable later without a kernel first shown not to hang.
+
+That leaves the section with one useful job, and it is not the one it was
+written for: **its correct output is empty.** A root hub under
+`/sys/bus/usb/devices`, a `dwc3` or `xhci` line in `dmesg`, anything at all —
+each of those means a USB module reached the image, which is a build mistake
+worth chasing rather than a result worth recording. Read it as a regression
+check, not as a TODO.
 
 ## The peripheral sections — `pcie`, `usb`, `net`, `buses`
 
 These four were added once the port reached the point of driving peripherals
-rather than only dumping flash. Each answers one board-level question that no
-amount of offline reading can settle:
+rather than only dumping flash. Three answer a board-level question that no
+amount of offline reading can settle; the fourth is a guard:
 
 | Section | Answers |
 |---|---|
 | `pcie` | is the MT7916 on the bus, and are the reset/enable GPIOs right |
-| `usb` | did the controller bind, and is a port wired |
+| `usb` | **expect nothing** — output here means USB leaked into the image |
 | `net` | which front-panel jack is which `gmac_portN`, from the carrier bit |
 | `buses` | thermal zone, watchdog and interrupt activity, for a quick health read |

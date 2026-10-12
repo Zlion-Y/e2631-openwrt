@@ -10,6 +10,11 @@
 # given, the file is taken from that OpenWrt checkout instead of this repo.
 #
 # Needs cpp and dtc. On Debian/Ubuntu: apt-get install device-tree-compiler.
+#
+# On a machine with neither of those - which is the one this repo was written
+# on - tools/dts_lint.py covers the three mistakes that would fail a build
+# first: a missing /dts-v1/;, an #include that does not resolve, and a &label
+# that nothing defines. It is a screen, not a substitute for this script.
 
 set -eu
 

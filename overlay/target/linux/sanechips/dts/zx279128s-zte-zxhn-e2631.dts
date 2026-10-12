@@ -8,10 +8,11 @@
  * number and clock cell is inherited from there rather than copied here.
  *
  * Scope of this revision: reach a shell over UART, read the SPI-NAND, and let
- * the MDIO bus be probed. It also turns on every peripheral that needs no
- * board-specific wiring and stages the two that do (PCIe and the panel)
- * behind the measurement that fills them in. Nothing in this file causes a
- * write to flash.
+ * the MDIO bus be probed. It turns on the peripherals that need no
+ * board-specific wiring and stages PCIe and the panel behind the measurement
+ * that fills them in. USB is deliberately left off - see the note on &usb
+ * below; it is the one peripheral here that is known to be harmful.
+ * Nothing in this file causes a write to flash.
  *
  * How to read a node's status:
  *   "okay"      its values are either inherited from the SoC file or measured
@@ -19,13 +20,28 @@
  *   "disabled"  it is a shape waiting for a measurement; the comment on it
  *               names the TODO id and where the number has to come from
  *
- * Board provenance: the addresses that this file does not inherit come from
- * the vendor U-Boot description of firmware ZXHN E2631 V1.0.0.6B5.8000 as
- * transcribed by Zlion-Y/e2631-mainline-zx279128s, and from the live /sys/
- * firmware/fdt dump of a ZXHN F670L in cubingmucus998/zte-zx279128s-recon.
- * Both are the same silicon, so their values are evidence, but neither is
- * this board: every item marked TODO has to be measured on this E2631.
+ * Board provenance, strongest first:
+ *
+ *   1. the live /sys/firmware/fdt of this very board (an E2631 running the
+ *      stock firmware), pulled over tftp and archived as refs/e2631_live.dtb
+ *      with its decoded tree in refs/e2631_live_dt_tree.txt. This is the
+ *      authoritative description of this hardware, and the analysis of it is
+ *      in E2631原厂硬件视图-2026-10-12.txt. Where this file states a value it
+ *      is because of this source.
+ *   2. the DTB appended to the kernel1 partition of the same firmware - same
+ *      tree, except that the kernel rewrites the memory node and bootargs at
+ *      boot. Useful for seeing what the kernel changed.
+ *   3. the vendor U-Boot description of firmware ZXHN E2631 V1.0.0.6B5.8000
+ *      as transcribed by Zlion-Y/e2631-mainline-zx279128s, and the live fdt
+ *      of a ZXHN F670L in cubingmucus998/zte-zx279128s-recon. Same silicon,
+ *      so their values are evidence, but they are not this board.
+ *
+ * Anything that still starts with TODO is not in any of the three, and has to
+ * be measured on this board: the panel, the port mapping and the PCIe reset
+ * line are the whole of that list.
  */
+
+/dts-v1/;
 
 #include <dt-bindings/gpio/gpio.h>
 #include <dt-bindings/leds/common.h>
@@ -58,18 +74,35 @@
 	memory@40000000 {
 		device_type = "memory";
 		/*
-		 * TODO-M1 128 MiB is the only size that is known to boot on this
-		 * board - it is what the mainline E2631 tree ships, and its boot
-		 * log ends with a shell. The same boot log prints "DRAM: 256 MiB"
-		 * from U-Boot and the retail product is specified with 256 MiB, so
-		 * the second cell is most likely 0x10000000.
+		 * TODO-M1 closed: 256 MiB, measured on the running board.
 		 *
-		 * Change it only after this file has booted once. An over-sized
-		 * value makes the kernel use DRAM that is not there; the symptom
-		 * is a silent stop shortly after "Freeing unused kernel image".
+		 * The stock firmware's own device tree is the source. Its
+		 * /proc/device-tree/memory/reg reads 40 00 00 00 10 00 00 00,
+		 * i.e. base 0x40000000 size 0x10000000, and its chosen/bootargs
+		 * carries mem=256M, which is what the kernel rewrote that node
+		 * from. /proc/iomem agrees (System RAM 0x40000000-0x4fffffff).
+		 *
+		 * Two traps, both from an earlier reading of this board:
+		 *   - The same tree also has a memory@40000000 node still saying
+		 *     0x20000000 (512 MiB). That one is a stale leftover nobody
+		 *     rewrote; it is not evidence of 512 MiB and not evidence of
+		 *     a contradiction.
+		 *   - 128 MiB was used here before because it was the only size
+		 *     known to boot. It boots because it is a subset, not because
+		 *     it is right. The hardware has 256 MiB.
 		 */
-		reg = <0x40000000 0x08000000>;
+		reg = <0x40000000 0x10000000>;
 	};
+
+	/*
+	 * No reserved-memory node.
+	 *
+	 * The H3600 keeps the top 38 MiB away from Linux for its packet
+	 * processor, but that is that board's arrangement. Here the vendor
+	 * device tree's memory reservations section is empty, and the stock
+	 * kernel boots with all 256 MiB usable, so reserving anything would
+	 * be inventing a hole.
+	 */
 };
 
 /*
@@ -154,17 +187,37 @@
 };
 
 /*
- * MDIO and the five-port Ethernet.
+ * MDIO and the Ethernet ports.
  *
- * TODO-N1 This whole block is a hypothesis, not a measurement. It is copied
- * from the H3600: same SoC, the same four internal GEPHY blocks at
- * 0x9b000000..0x9b300000 (interrupts 39..42 in both vendor trees), and a
- * single external PHY on the WAN side. Both boards are Ethernet-WAN home
- * gateways, which is what makes the guess worth trying. The H3600 driver
- * reaches its internal PHYs purely as MDIO addresses - there is no GEPHY
- * driver anywhere in the series - so if the E2631's PHYs answer elsewhere,
- * only the affected port loses its netdev and dmesg says so explicitly.
- * Everything else on the board still boots.
+ * TODO-N1 what is settled, and what is not.
+ *
+ * Settled, from the stock firmware's own device tree:
+ *   - the MDIO controller is at 0x9a101000 (0x18 bytes) and is enabled;
+ *   - the SoC has four internal GEPHY blocks at 0x9b000000, 0x9b100000,
+ *     0x9b200000 and 0x9b300000, interrupts 39..42. These are SoC-fixed,
+ *     not board choices, and they match the H3600 exactly.
+ *
+ * Settled, from the stock firmware's running network stack:
+ *   - this board has **four** gigabit ports, not five: br0 in the vendor
+ *     firmware bridges eth1, eth2 and eth3 only, and eth0 is the sole
+ *     PROMISC + UP uplink, i.e. WAN. So one WAN plus three LAN.
+ *
+ * NOT settled, and not guessable from the above:
+ *   - which gmac_port maps to which panel socket, and which of the four
+ *     is the WAN. The mapping the H3600 uses (port0..3 = LAN, port4 =
+ *     WAN with an external ZX5201 on MDIO address 8) is that board's
+ *     wiring. Copying it here would be a guess dressed as a measurement.
+ *   - whether this board has any external PHY at all. Four internal
+ *     GEPHY blocks cover four ports, so it may well have none.
+ *
+ * The nodes below are therefore kept as a working shape rather than as
+ * a claim: whichever port has no PHY answering simply never gets a
+ * netdev, dmesg says so per port, and everything else on the board still
+ * boots. What fills this in is the probe, not further reasoning:
+ *   tools/probe-e2631.sh mdio   lists every address that answers, and
+ *   tools/probe-e2631.sh net    snapshots carrier per netdev, which
+ *                               turns into the socket mapping once a
+ *                               cable is moved from one port to the next.
  *
  * If boot ever stalls inside phylink, set &gmac back to "disabled": the
  * console and the flash dump do not depend on it.
@@ -173,10 +226,10 @@
 	status = "okay";
 
 	/*
-	 * TODO-N2 the H3600 muxes the external PHY through the pinctrl group
-	 * ext_phy_pins (defined in the SoC file at line 269). Whether this board
-	 * needs the same pins is unknown, so it is not referenced here. If the
-	 * WAN PHY stays silent at every address, add:
+	 * TODO-N2 the H3600 muxes its external PHY through the pinctrl group
+	 * ext_phy_pins (defined in the SoC file). Whether this board needs
+	 * the same pins is unknown, so it is not referenced here. If the
+	 * expected PHYs stay silent at every address, add:
 	 *   pinctrl-names = "default";
 	 *   pinctrl-0 = <&ext_phy_pins>;
 	 */
@@ -205,43 +258,57 @@
 	status = "okay";
 };
 
+/*
+ * TODO-N1 the four port nodes below carry no "label" on purpose.
+ *
+ * The board has four sockets, but nothing measured so far says which gmac
+ * port drives which socket, or which one is the WAN. A label is a claim
+ * about the panel, so writing "lan1"/"wan" here would bake a guess into
+ * every interface name downstream (board.d, firewall zones, the lot).
+ * Without a label the ports still come up as plain netdevs, which is all
+ * stage 1 needs, and the mapping gets filled in from the probe's carrier
+ * snapshot once a cable is walked from socket to socket.
+ *
+ * The phy-handle values are the H3600's and are equally unverified. They
+ * are kept because the four internal GEPHY blocks are SoC-fixed, so some
+ * address in this range almost certainly answers; the probe's "mdio" mode
+ * prints which ones actually do.
+ */
 &gmac_port0 {
-	label = "lan1";
 	phy-handle = <&phy10>;
 	phy-mode = "internal";
-	/*
-	 * TODO-A1 no nvmem-cells here. The H3600 reads its base MAC from the
-	 * "tag" partition at offset 0x1e, which requires a fixed-partitions
-	 * layout and a matching nvmem-layout - neither exists on this board yet.
-	 * Without it the interfaces come up with a random locally administered
-	 * address, which is fine for a RAM image but must not ship.
-	 */
 	status = "okay";
 };
 
 &gmac_port1 {
-	label = "lan2";
 	phy-handle = <&phy11>;
 	phy-mode = "internal";
 	status = "okay";
 };
 
 &gmac_port2 {
-	label = "lan3";
 	phy-handle = <&phy12>;
 	phy-mode = "internal";
 	status = "okay";
 };
 
 &gmac_port3 {
-	label = "lan4";
 	phy-handle = <&phy13>;
 	phy-mode = "internal";
 	status = "okay";
 };
 
+/*
+ * TODO-N1 port4 is probably not wired on this board.
+ *
+ * The H3600 uses a fifth port for WAN behind an external ZX5201 PHY on
+ * MDIO address 8. This board only has four sockets, and four internal
+ * GEPHY blocks already cover them, so a fifth port would need an external
+ * PHY that may not be there. Kept enabled so the boot log answers the
+ * question instead of the comment: if nothing answers at address 8, this
+ * port simply never appears, and that is the measurement.
+ */
 &gmac_port4 {
-	label = "wan";
 	phy-handle = <&phy8>;
 	phy-mode = "gmii";
 	status = "okay";
@@ -255,16 +322,39 @@
  * ------------------------------------------------------------------------- */
 
 /*
- * USB 3.0 (DesignWare DWC3) at 0x09100000, GIC_SPI 50, with clocks and resets
- * inherited from the SoC file. The driver is a module in the target's config,
- * so this line only means something once the image carries kmod-usb-dwc3.
+ * USB. Deliberately NOT enabled, and not by oversight.
  *
- * TODO-U1 whether this board exposes a USB socket at all is unmeasured.
- * Enabling the controller anyway costs nothing and answers that from the boot
- * log, and from lsusb if a port is wired.
+ * The SoC has two controllers - DWC3 at 0x09100000 (GIC_SPI 50) and DWC2 at
+ * 0x09000000 (GIC_SPI 44) - and the stock firmware device tree marks both
+ * "okay". On this board, reaching either of them is harmful: the reports are
+ * of the USB controller being touched, the system then hanging, and the
+ * hardware watchdog restarting it in a loop. A board that reboots in a loop
+ * is not a board that can be probed, so USB stays off rather than being a
+ * cheap thing to try.
+ *
+ * Three separate switches all have to stay off, and this file is only the
+ * first of them:
+ *   1. here - &usb keeps its inherited status = "disabled", so no controller
+ *      is registered and nothing pokes 0x09100000;
+ *   2. seed/e2631.config turns CONFIG_USB_SUPPORT off, so no USB code is
+ *      built into the kernel at all;
+ *   3. this device's fragment carries no USB kmod, so no module can bring a
+ *      controller back up at runtime. (The H3600 relies on DEVICE_PACKAGES
+ *      for that; nothing does here.)
+ *
+ * Note the interaction with the target's own config, which is why (2) has to
+ * be explicit: config-6.18 sets CONFIG_USB=m and CONFIG_USB_DWC3=m, and
+ * kmod-usb-dwc3 is a package a later change could pull in without anyone
+ * intending to enable USB. Turning the symbols off in the seed removes that
+ * possibility instead of relying on nobody adding the package.
+ *
+ * TODO-U1 is withdrawn, not deferred. Whether the panel area exposes a USB
+ * socket is no longer a question worth answering: even if it does, this board
+ * must not bring the controller up. If that ever changes it needs a kernel
+ * that has been shown not to hang first, not a device tree edit.
  */
 &usb {
-	status = "okay";
+	status = "disabled";
 };
 
 /*
@@ -272,15 +362,31 @@
  * config windows, outbound ranges, dma-ranges and the pinctrl groups - so the
  * only thing missing is board wiring: the reset and enable lines.
  *
- * TODO-W1 the pair below is the H3600's (<&gpio3 5> and <&gpio3 7>), where a
- * single MT7915 hangs off both links and either controller may release it.
- * This board is an AX3000 part and is expected to carry one MT7916. Treat
- * these two lines as a starting guess, not a measurement.
+ * TODO-W1 the pair below is a guess, and the vendor tree argues against it.
+ *
+ * What the guess is: <&gpio3 5> and <&gpio3 7>, copied from the H3600, where
+ * a single MT7915 hangs off both links and either controller may release it.
+ *
+ * Why it is weaker than it looks. The stock firmware's own device tree has a
+ * pcie@10000000 node that is status "okay" and carries no board wiring at
+ * all: no reg, no reset-gpios, no enable-gpios, no pinctrl-0. Whatever resets
+ * this link, the vendor does not express it in the device tree - it is either
+ * done by the boot loader before Linux starts, or hard-wired in the vendor
+ * driver. So there is no positive evidence for gpio3 5 / gpio3 7 here, only
+ * the shared-SoC resemblance.
+ *
+ * What the vendor tree does settle: its node lists four interrupts (SPI 63,
+ * 78, 59, 74), and 63 and 78 are exactly the two controllers' main
+ * interrupts in the SoC file. So this board has two PCIe controllers, like
+ * the H3600, and is expected to carry one MT7916 (CONFIG_WLAN_MTK_7916 is in
+ * the vendor config); whether that chip answers on one link or two is
+ * unmeasured.
  *
  * Unlike a wrong LED GPIO, a wrong reset line is not cosmetic: the controller
  * can hang. If the boot log stops inside the PCIe driver, set both nodes back
  * to "disabled" and boot again - this image never writes flash, so the retry
- * costs nothing.
+ * costs nothing. The link is worth having: without it there is no Wi-Fi, and
+ * probe mode "pcie" is what tells us whether anything enumerated.
  */
 &pcie0 {
 	reset-gpios = <&gpio3 5 GPIO_ACTIVE_LOW>;
@@ -302,6 +408,14 @@
  * here would be a silently wrong claim. Identify the real lines by toggling
  * each GPIO and watching the front panel (tools/probe-e2631.sh, "gpio" mode),
  * then uncomment this into the root node and fill the numbers in:
+ *
+ * A note on why the stock device tree cannot help either: it has no led or
+ * key node at all (checked against the live /sys/firmware/fdt, 27 nodes under
+ * /soc and not one gpio consumer among them). That is not an omission - the
+ * vendor kernel carries CONFIG_CSPKERNEL_LEDKEY, its own LED/key framework,
+ * and drives the panel from that instead of through gpio-leds/gpio-keys. So
+ * there is no upstream-readable description of this board's panel anywhere.
+ * Only a measurement on the physical board produces the numbers.
  *
  *	leds {
  *		compatible = "gpio-leds";

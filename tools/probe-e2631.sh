@@ -357,23 +357,27 @@ probe_pcie() {
 }
 
 # --------------------------------------------------------------------------
-# USB. Two questions: did the controller bind at all, and is a socket wired.
+# USB. A guard, not a measurement. USB is disabled on purpose - bringing a
+# controller up hangs this board and the watchdog then loops it - so the
+# correct output here is nothing at all. Anything found is a build mistake.
 probe_usb() {
-	hdr "USB"
-	if have lsusb; then
-		lsusb | sed 's/^/  /' >>"$LOG"
-		say "  lsusb output copied to the log"
-	else
-		say "  lsusb missing - the sysfs list below is the fallback"
-	fi
-	say "  root hubs and devices:"
+	hdr "USB (negative control - nothing is expected here)"
+	usbfound=0
 	for d in /sys/bus/usb/devices/*; do
 		[ -e "$d" ] || continue
+		usbfound=$((usbfound + 1))
 		say "    ${d##*/}  speed=$(cat "$d/speed" 2>/dev/null || echo -)"
 	done
-	[ -e /sys/bus/usb/devices/usb1 ] || \
-		say "    no root hub - the DWC3 driver did not bind (is kmod-usb-dwc3 in the image?)"
+	have lsusb && lsusb | sed 's/^/  /' >>"$LOG"
 	dmesg | grep -iE 'dwc3|xhci|new .*USB device' | tail -25 | sed 's/^/    /' >>"$LOG"
+	if [ "$usbfound" -eq 0 ]; then
+		say "  nothing under /sys/bus/usb/devices - correct, USB is off by design"
+	else
+		say "  ** $usbfound USB device(s) present - USB leaked into this image **"
+		say "     It must stay off: bringing a controller up hangs this board and"
+		say "     the watchdog then loops. Look at env/kernel-config and at the"
+		say "     device fragment's packages - not at the device tree alone."
+	fi
 }
 
 # --------------------------------------------------------------------------
