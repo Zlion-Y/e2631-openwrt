@@ -1,0 +1,348 @@
+// SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
+/*
+ * ZTE ZXHN E2631 (Sanechips ZX279128S, 2x ARM Cortex-A9) - stage 1 bring-up.
+ *
+ * Lives in the OpenWrt target, not in the kernel tree. It sits on top of the
+ * SoC description that target patch 025 installs at
+ * arch/arm/boot/dts/zte/zx279128s.dtsi, so every register window, interrupt
+ * number and clock cell is inherited from there rather than copied here.
+ *
+ * Scope of this revision: reach a shell over UART, read the SPI-NAND, and let
+ * the MDIO bus be probed. It also turns on every peripheral that needs no
+ * board-specific wiring and stages the two that do (PCIe and the panel)
+ * behind the measurement that fills them in. Nothing in this file causes a
+ * write to flash.
+ *
+ * How to read a node's status:
+ *   "okay"      its values are either inherited from the SoC file or measured
+ *               on this board
+ *   "disabled"  it is a shape waiting for a measurement; the comment on it
+ *               names the TODO id and where the number has to come from
+ *
+ * Board provenance: the addresses that this file does not inherit come from
+ * the vendor U-Boot description of firmware ZXHN E2631 V1.0.0.6B5.8000 as
+ * transcribed by Zlion-Y/e2631-mainline-zx279128s, and from the live /sys/
+ * firmware/fdt dump of a ZXHN F670L in cubingmucus998/zte-zx279128s-recon.
+ * Both are the same silicon, so their values are evidence, but neither is
+ * this board: every item marked TODO has to be measured on this E2631.
+ */
+
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/leds/common.h>
+#include <dt-bindings/input/input.h>
+
+#include "zte/zx279128s.dtsi"
+
+/ {
+	model = "ZTE ZXHN E2631";
+	compatible = "zte,zxhn-e2631", "zte,zx279128s";
+
+	aliases {
+		serial0 = &serial0;
+		serial1 = &serial1;
+		ethernet0 = &gmac;
+		/*
+		 * TODO-L1 once a power LED has been identified, point these at
+		 * it so OpenWrt signals boot, failsafe and upgrade on the panel:
+		 *   led-boot / led-failsafe / led-running / led-upgrade
+		 * Until then nothing on the front panel tracks the boot state,
+		 * which is acceptable for an image that only ever runs from RAM.
+		 */
+	};
+
+	chosen {
+		bootargs = "console=ttyAMA0,115200n8";
+		stdout-path = "serial0:115200n8";
+	};
+
+	memory@40000000 {
+		device_type = "memory";
+		/*
+		 * TODO-M1 128 MiB is the only size that is known to boot on this
+		 * board - it is what the mainline E2631 tree ships, and its boot
+		 * log ends with a shell. The same boot log prints "DRAM: 256 MiB"
+		 * from U-Boot and the retail product is specified with 256 MiB, so
+		 * the second cell is most likely 0x10000000.
+		 *
+		 * Change it only after this file has booted once. An over-sized
+		 * value makes the kernel use DRAM that is not there; the symptom
+		 * is a silent stop shortly after "Freeing unused kernel image".
+		 */
+		reg = <0x40000000 0x08000000>;
+	};
+};
+
+/*
+ * Console. 0x94404000 / 0x94405000 with GIC_SPI 11 and 12 are identical in the
+ * vendor descriptions of all three boards seen so far, so these are settled.
+ */
+&serial0 {
+	status = "okay";
+};
+
+&serial1 {
+	status = "okay";
+};
+
+/*
+ * SPI-NAND. The controller window 0x94406000 + 0x1000 and GIC_SPI 13 match the
+ * vendor's own node, and the driver is the one patch 021/022 add.
+ */
+&spifc {
+	status = "okay";
+
+	flash@0 {
+		compatible = "spi-nand";
+		reg = <0>;
+		/*
+		 * TODO-F1 taken from the H3600, which drives the same HYF1GQ4U
+		 * family at 50 MHz with 2 data lines on read. U-Boot on this board
+		 * identifies the chip as HYF1GQ4UTACAE, manuf 0x01 / chip 0x15.
+		 * If reads come back with ECC errors or the controller stalls,
+		 * drop this to <10000000>: 10 MHz was shown to checksum correctly.
+		 */
+		spi-max-frequency = <50000000>;
+		spi-rx-bus-width = <2>;
+		spi-tx-bus-width = <1>;
+
+		/*
+		 * No fixed-partitions child in this stage, on purpose: this
+		 * stage exists to dump the chip, and one mtd spanning all
+		 * 128 MiB is what tools/probe-e2631.sh consumes. No live node
+		 * here means no label in this tree can be mistaken for a
+		 * measurement.
+		 *
+		 * The layout IS now known. Source of truth: the vendor kernel
+		 * carries its own partition table, in vmlinux at file offset
+		 * 0x432358 - 15 entries, 0x20 bytes apart, {char *name;
+		 * u32 pad; u64 size; u64 offset; u64 pad;}. It is not in
+		 * /proc/cmdline and not in the device tree. It was then checked
+		 * against the raw 128 MiB dump: cspboot's 32-byte slot marker
+		 * (33 33 33 33 CC CC CC CC 88 88 88 88 DD DD DD DD) reads back
+		 * at 0x700000 and 0x2300000 - exactly the two addresses the
+		 * table itself calls kernel1 and kernel2 - and flash@0x6E00000
+		 * equals mtdblock13 byte for byte.
+		 *
+		 *   name         offset       size        name         offset       size
+		 *   bootloader   0x0000000    0x100000    defcfg       0x0500000    0x200000
+		 *   tag          0x0100000    0x100000    kernel1      0x0700000    0x1C00000
+		 *   wifi         0x0200000    0x100000    kernel2      0x2300000    0x1C00000
+		 *   usercfg      0x0300000    0x200000    (rootfs)     -            -
+		 *   UNIFIED      0x6E00000    0x100000    UUPlugin     0x6F00000    0x500000
+		 *   DPIPlugin    0x7400000    0x300000    JDXBPLUGIN   0x7700000    0x180000
+		 *   owdptsbin    0x7900000    0x0A0000    status       0x7A00000    0x500000
+		 *
+		 * kernel1 and kernel2 are the two 28 MiB A/B firmware slots, and
+		 * each carries its own kernel and its own rootfs. The table's
+		 * rootfs row is the placeholder (0,0) precisely because rootfs
+		 * has no span of its own. Slot A: kernel at 0x700000 (3.25 MiB),
+		 * rootfs at 0xA40000 (18.125 MiB), version header at 0x1C60000.
+		 * Slot B mirrors it at 0x2300000 / 0x2640000 / 0x3860000. The
+		 * 47 MiB from 0x3F00000 to 0x6E00000 is erased and free.
+		 *
+		 * Two things must be settled before this becomes live nodes in
+		 * stage 2. Both are stage 2 questions, because neither affects
+		 * an image that never writes:
+		 *   - the vendor rootfs partitions are AES-128-ECB ciphertext on
+		 *     flash (the vendor read path decrypts transparently), so
+		 *     anything that interprets them has to decrypt offline;
+		 *   - it is not yet proven that cspboot will boot a plaintext
+		 *     slot, which is the same question as whether an
+		 *     OpenWrt-written slot is bootable at all.
+		 */
+	};
+};
+
+/*
+ * MDIO and the five-port Ethernet.
+ *
+ * TODO-N1 This whole block is a hypothesis, not a measurement. It is copied
+ * from the H3600: same SoC, the same four internal GEPHY blocks at
+ * 0x9b000000..0x9b300000 (interrupts 39..42 in both vendor trees), and a
+ * single external PHY on the WAN side. Both boards are Ethernet-WAN home
+ * gateways, which is what makes the guess worth trying. The H3600 driver
+ * reaches its internal PHYs purely as MDIO addresses - there is no GEPHY
+ * driver anywhere in the series - so if the E2631's PHYs answer elsewhere,
+ * only the affected port loses its netdev and dmesg says so explicitly.
+ * Everything else on the board still boots.
+ *
+ * If boot ever stalls inside phylink, set &gmac back to "disabled": the
+ * console and the flash dump do not depend on it.
+ */
+&mdio {
+	status = "okay";
+
+	/*
+	 * TODO-N2 the H3600 muxes the external PHY through the pinctrl group
+	 * ext_phy_pins (defined in the SoC file at line 269). Whether this board
+	 * needs the same pins is unknown, so it is not referenced here. If the
+	 * WAN PHY stays silent at every address, add:
+	 *   pinctrl-names = "default";
+	 *   pinctrl-0 = <&ext_phy_pins>;
+	 */
+	phy8: ethernet-phy@8 {
+		reg = <8>;
+	};
+
+	phy10: ethernet-phy@10 {
+		reg = <10>;
+	};
+
+	phy11: ethernet-phy@11 {
+		reg = <11>;
+	};
+
+	phy12: ethernet-phy@12 {
+		reg = <12>;
+	};
+
+	phy13: ethernet-phy@13 {
+		reg = <13>;
+	};
+};
+
+&gmac {
+	status = "okay";
+};
+
+&gmac_port0 {
+	label = "lan1";
+	phy-handle = <&phy10>;
+	phy-mode = "internal";
+	/*
+	 * TODO-A1 no nvmem-cells here. The H3600 reads its base MAC from the
+	 * "tag" partition at offset 0x1e, which requires a fixed-partitions
+	 * layout and a matching nvmem-layout - neither exists on this board yet.
+	 * Without it the interfaces come up with a random locally administered
+	 * address, which is fine for a RAM image but must not ship.
+	 */
+	status = "okay";
+};
+
+&gmac_port1 {
+	label = "lan2";
+	phy-handle = <&phy11>;
+	phy-mode = "internal";
+	status = "okay";
+};
+
+&gmac_port2 {
+	label = "lan3";
+	phy-handle = <&phy12>;
+	phy-mode = "internal";
+	status = "okay";
+};
+
+&gmac_port3 {
+	label = "lan4";
+	phy-handle = <&phy13>;
+	phy-mode = "internal";
+	status = "okay";
+};
+
+&gmac_port4 {
+	label = "wan";
+	phy-handle = <&phy8>;
+	phy-mode = "gmii";
+	status = "okay";
+};
+
+/* ---------------------------------------------------------------------------
+ * Peripherals
+ *
+ * Everything below is a status plus board wiring, if any: every register
+ * window and interrupt comes from the SoC file this one includes.
+ * ------------------------------------------------------------------------- */
+
+/*
+ * USB 3.0 (DesignWare DWC3) at 0x09100000, GIC_SPI 50, with clocks and resets
+ * inherited from the SoC file. The driver is a module in the target's config,
+ * so this line only means something once the image carries kmod-usb-dwc3.
+ *
+ * TODO-U1 whether this board exposes a USB socket at all is unmeasured.
+ * Enabling the controller anyway costs nothing and answers that from the boot
+ * log, and from lsusb if a port is wired.
+ */
+&usb {
+	status = "okay";
+};
+
+/*
+ * PCIe. Both controllers are fully described in the SoC file - dbi, ctrl and
+ * config windows, outbound ranges, dma-ranges and the pinctrl groups - so the
+ * only thing missing is board wiring: the reset and enable lines.
+ *
+ * TODO-W1 the pair below is the H3600's (<&gpio3 5> and <&gpio3 7>), where a
+ * single MT7915 hangs off both links and either controller may release it.
+ * This board is an AX3000 part and is expected to carry one MT7916. Treat
+ * these two lines as a starting guess, not a measurement.
+ *
+ * Unlike a wrong LED GPIO, a wrong reset line is not cosmetic: the controller
+ * can hang. If the boot log stops inside the PCIe driver, set both nodes back
+ * to "disabled" and boot again - this image never writes flash, so the retry
+ * costs nothing.
+ */
+&pcie0 {
+	reset-gpios = <&gpio3 5 GPIO_ACTIVE_LOW>;
+	enable-gpios = <&gpio3 7 GPIO_ACTIVE_HIGH>;
+	status = "okay";
+};
+
+&pcie1 {
+	reset-gpios = <&gpio3 5 GPIO_ACTIVE_LOW>;
+	enable-gpios = <&gpio3 7 GPIO_ACTIVE_HIGH>;
+	status = "okay";
+};
+
+/*
+ * The panel: LEDs and buttons.
+ *
+ * TODO-L1 deliberately left as a shape rather than a node. LED routing is per
+ * board, so not one of the H3600's numbers may be copied, and a wrong number
+ * here would be a silently wrong claim. Identify the real lines by toggling
+ * each GPIO and watching the front panel (tools/probe-e2631.sh, "gpio" mode),
+ * then uncomment this into the root node and fill the numbers in:
+ *
+ *	leds {
+ *		compatible = "gpio-leds";
+ *
+ *		led_power: led-power {
+ *			function = LED_FUNCTION_POWER;
+ *			gpios = <&gpioN M GPIO_ACTIVE_LOW>;
+ *			default-state = "on";
+ *		};
+ *	};
+ *
+ *	keys {
+ *		compatible = "gpio-keys-polled";
+ *		poll-interval = <50>;	// &gpio has no interrupt support
+ *
+ *		key-reset {
+ *			label = "reset";
+ *			gpios = <&gpioN M GPIO_ACTIVE_LOW>;
+ *			linux,code = <KEY_RESTART>;
+ *			debounce-interval = <60>;
+ *		};
+ *	};
+ *
+ * The aliases block at the top of this file is where led-boot, led-running
+ * and the rest get pointed at those nodes once they exist.
+ */
+
+/*
+ * TODO-A1 the MAC address. The H3600 reads six bytes at offset 0x1e of the
+ * "tag" partition (flash 0x100000) and the WAN port uses the next one. That
+ * partition exists here and is plaintext, but the offset is unverified. Until
+ * it is measured - the same probe prints the tag header - the interfaces come
+ * up with a random locally administered address, which is acceptable for a
+ * RAM image and must not ship.
+ *
+ *	&gmac_port0 {
+ *		nvmem-cells = <&macaddr_tag_1e 0>;
+ *		nvmem-cell-names = "mac-address";
+ *	};
+ *
+ * That needs the tag partition's fixed-partitions child and an nvmem-layout,
+ * which is a stage 2 change: it is the point where the flash layout becomes
+ * live in this tree.
+ */

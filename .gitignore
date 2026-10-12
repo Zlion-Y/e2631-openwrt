@@ -1,0 +1,12 @@
+# Clones made by apply.sh, check-dts.sh or the CI workflow. They are large
+# and must never be committed -- the build tree is reproduced from these
+# variables in .github/workflows/build-initramfs.yml:
+#   OPENWRT_REPO / OPENWRT_REF / LINUX_REPO / LINUX_REF
+/openwrt/
+/linux/
+
+# Artefacts collected by CI before upload.
+/out/
+
+# Local scratch.
+*.tmp
