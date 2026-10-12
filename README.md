@@ -86,8 +86,9 @@ packages. Revert is three commands (`apply.sh` prints them).
 
 ## Build
 
-Push this directory as a repository and let Actions do the work; a full OpenWrt
-build needs Linux and roughly 25 GB, which this machine has neither of.
+This lives at **<https://github.com/Zlion-Y/e2631-openwrt>**, and Actions is how
+it is built: a full OpenWrt build needs Linux and roughly 25 GB, which the
+machine it is developed on has neither of. Push and the workflow does the rest.
 
 The workflow clones `ghahramani/openwrt` at `pr-zte-zxhn-h3600`, runs
 `apply.sh`, and uploads
@@ -242,8 +243,13 @@ Real caveats, so you know what you are holding:
 - Nothing here has been run against an E2631, so none of it is a measurement of
   one. The exceptions are the memory size and the slot the stock firmware boots
   from; both came off the running board, and the device tree says so at the node.
-- **The workflow has never run.** No repository has been pointed at it yet, so
-  its steps are read-verified rather than executed. The two preconditions it
+- **The workflow has run once, on 2026-10-12.** The `dts` job passed in about
+  forty-five seconds — the first time this board's device tree has been through
+  `cpp` and `dtc` at all, and it is what caught the missing `/dts-v1/;`. The
+  `build` job then got past the host dependency install, the upstream clone,
+  `apply.sh`, `make defconfig`, `make prereq` and the feed install, so those
+  steps are executed rather than read-verified; the compile that follows is
+  the part still unproven. The two preconditions it
   leans on outside this repo were checked against the real things: the
   `ghahramani/linux` branch `h3600-linux-rfc` exists and does carry
   `arch/arm/boot/dts/zte/zx279128s.dtsi` and
