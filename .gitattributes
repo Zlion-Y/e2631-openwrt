@@ -1,0 +1,10 @@
+# The CI runner is Linux and executes apply.sh / check-dts.sh with /bin/sh.
+# A CRLF in those files shows up only after a push, as
+#   /bin/sh^M: bad interpreter
+# which is a slow way to find out. Pin the line ending here so the result no
+# longer depends on core.autocrlf on whatever machine does the commit.
+* text=auto eol=lf
+*.sh text eol=lf
+*.mk text eol=lf
+*.dts text eol=lf
+*.dtsi text eol=lf
