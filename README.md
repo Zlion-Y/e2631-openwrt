@@ -1,6 +1,16 @@
 # ZTE ZXHN E2631 — OpenWrt stage 1 (RAM only)
 
+> **SUPERSEDED — 2026-10-14.** This history now lives as the `stage1-scaffold`
+> branch of <https://github.com/Zlion-Y/e2631-openwrt-build>, which is where the
+> work continued: the image flashed into a real slot, went through the vendor
+> `supgrade.html` page, and booted to a shell on LuCI. Every question this stage
+> asked is answered there — `tools/PROBE.md` on `main` carries the per-`TODO`
+> status (MDIO `0a-0d`, `macaddr_tag_1e` → nvmem, the three LEDs, `&gpio3 7` as
+> the PCIe enable line, SPI-NAND timing), and the still-open ones are marked as
+> still open. Nothing new should land on this repository.
+
 A fork-and-build package that adds the **ZXHN E2631** (Sanechips ZX279128S,
+
 2x ARM Cortex-A9) to the `sanechips` target from
 [openwrt/openwrt#25469](https://github.com/openwrt/openwrt/pull/25469), and
 produces **an image that only ever runs from RAM**.
